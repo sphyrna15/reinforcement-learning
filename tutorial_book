@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Apr 10 16:08:27 2020
+
+@author: v1per
+"""
+
+
+""" Experiment with info in HandsOn ML book """
+
+import gym 
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+
+
+env = gym.make("CartPole-v1")
+
+# obs = env.reset()
+# env.render()
+# actions = env.action_space
+
+""" Simple hardcoded policy for CartPole """
+def basic_policy(obs):
+    angle = obs[2]
+    return 0 if angle < 0 else 1
+
+
+totals = []
+
+for episode in range(500):
+    episode_rewards = 0
+    obs = env.reset()
+    
+    for step in range(200):
+        action = basic_policy(obs)
+        obs, reward, done, info = env.step(action)
+        # env.render()
+        episode_rewards += reward
+        if done:
+            break
+    
+    totals.append(episode_rewards)
+
+m = np.mean(totals)
+std = np.std(totals)
+minim = np.min(totals)
+maxi = np.max(totals)
+
+print(m, std, minim, maxi)
+
+
+""" Implementing a RL NN """
+
+input_size = env.observation_space.shape[0]
+
+model = keras.models.Sequential([
+    keras.layers.Dense(7, activation = 'elu', input_shape = [input_size]),
+    keras.layers.Dense(1, activation = 'sigmoid')])
+
+def one_step(env, obs, model, f_loss):
+    
+    with tf.GradientTape() as tape:
+        goleft = model(obs[np.newaxis])
+        action = (tf.random.uniform([1,1]) > goleft)
+        y_target = tf.constant([[1.]]) - tf.cast(action, tf.float32)
+        loss = tf.reduce_mean(f_loss(y_target, goleft))
+    
+    grads = tape.gradient(loss, model.trainable_variables)
+    obs, reward, done, info = env.step(int(action[0,0].numpy()))
+    
+    return obs, reward, done, grads
+
+
+def play_multistep(env, n_episodes, n_maxsteps, model, f_loss):
+    all_rewards = []
+    all_grads = []
+    
+    for episode in range(n_episodes):
+        current_rewards = []
+        current_grads = []
+        obs = env.reset()
+        
+        for step in range(n_maxsteps):
+            obs, reward, done, grads = one_step(env, obs, model, f_loss)
+            current_rewards.append(reward)
+            current_grads.append(grads)
+            if done:
+                break
+        
+        all_rewards.append(current_rewards)
+        all_grads.append(current_grads)
+    
+    return all_rewards, all_grads
+
+
+def discount_rewards(rewards, gamma):
+    discounted = np.array(rewards)
+    
+    for step in range(len(rewards)-2, -1, -1):
+        discounted[step] += rewards[step+1] * gamma
+    
+    return discounted
+
+def discount_and_normalize(rewards, gamma):
+    
+    all_discounted = [discount_rewards(reward, gamma) for reward in rewards]
+    flat_rewards = np.concatenate(all_discounted)
+    mean = flat_rewards.mean()
+    std = flat_rewards.std()
+    
+    return [(discounted - mean) / std for discounted in all_discounted]
+
+iterations = 150
+episodes_per_update = 10
+n_maxsteps = 200
+gamma = 0.95
+
+optimizer = keras.optimizers.Adam(lr=0.0075)
+lossfunc = keras.losses.binary_crossentropy
+
+
+""" Training of the model """
+for iteration in range(iterations):
+    all_rewards, all_grads = play_multistep(env, episodes_per_update, n_maxsteps, model, lossfunc)
+    all_final_rawards = discount_and_normalize(all_rewards, gamma)
+    all_mean_grads = []
+    for var in range(len(model.trainable_variables)):
+        meangrad = tf.reduce_mean(
+            [finreward * all_grads[episode][step][var] 
+              for episode, finrewards in enumerate(all_final_rawards)
+              for step, finreward in enumerate(finrewards)], axis = 0)
+        all_mean_grads.append(meangrad)
+        
+    optimizer.apply_gradients(zip(all_mean_grads, model.trainable_variables))
+    
+
+""" Run the model just like the simple policy """ 
+for episode in range(500):
+    episode_rewards = 0
+    obs = env.reset()
+    
+    for step in range(200):
+        goleft = model(obs[np.newaxis])
+        action = np.array((tf.random.uniform([1,1]) > goleft))
+        obs, reward, done, info = env.step(int(action[0]))
+        # env.render()
+        episode_rewards += reward
+        if done:
+            break
+    
+    totals.append(episode_rewards)
+
+m = np.mean(totals)
+std = np.std(totals)
+minim = np.min(totals)
+maxi = np.max(totals)
+
+print(m, std, minim, maxi)
+
+    
+
+
+
+
